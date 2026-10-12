@@ -148,6 +148,68 @@ class PoliciesTest(absltest.TestCase):
         jnp.array([0.25, 0.25, 0.25, 0.25]),
         jax.nn.softmax(masked_logits))
 
+  def test_zero_dirichlet_fraction_skips_the_noise(self):
+    probs = jnp.array([[0.2, 0.5, 0.3], [0.6, 0.1, 0.3]])
+    key = jax.random.PRNGKey(0)
+    noisy = policies._add_dirichlet_noise(
+        key, probs, dirichlet_alpha=0.3, dirichlet_fraction=0.0)
+    np.testing.assert_array_equal(noisy, probs)
+    # The compiled helper draws no random numbers (no sampling loop), while
+    # a non-zero fraction does.
+    lowered = jax.jit(functools.partial(
+        policies._add_dirichlet_noise, dirichlet_alpha=0.3,
+        dirichlet_fraction=0.0)).lower(key, probs).as_text()
+    self.assertNotIn("while", lowered)
+    lowered = jax.jit(functools.partial(
+        policies._add_dirichlet_noise, dirichlet_alpha=0.3,
+        dirichlet_fraction=0.25)).lower(key, probs).as_text()
+    self.assertIn("while", lowered)
+
+  def test_zero_dirichlet_fraction_gives_the_same_policy(self):
+    # The shortcut returns exactly what the mixing with a zero fraction did,
+    # and leaves the other random keys unchanged: the outputs match a
+    # policy whose fraction is a zero the shortcut cannot see (a traced one).
+    root = mctx.RootFnOutput(
+        prior_logits=jnp.array([[-1.0, 0.0, 2.0, 3.0], [0.5, 0.0, -1.0, 0.0]]),
+        value=jnp.array([0.1, -0.2]),
+        embedding=jnp.zeros([2]))
+    rewards = jnp.array([[1.0, -1.0, 0.5, 0.0], [0.0, 2.0, -1.0, 0.5]])
+    recurrent_fn = _make_bandit_recurrent_fn(rewards, jnp.zeros([2]))
+    key = jax.random.PRNGKey(3)
+
+    def policy(fraction):
+      return mctx.muzero_policy(
+          params=(), rng_key=key, root=root, recurrent_fn=recurrent_fn,
+          num_simulations=8, dirichlet_fraction=fraction)
+    static = policy(0.0)
+    traced = jax.jit(policy)(jnp.float32(0.0))
+    np.testing.assert_array_equal(static.action, traced.action)
+    np.testing.assert_allclose(static.action_weights, traced.action_weights,
+                               rtol=1e-6)
+    np.testing.assert_allclose(static.search_tree.node_values,
+                               traced.search_tree.node_values, rtol=1e-6)
+
+  def test_zero_gumbel_scale_gives_the_same_policy(self):
+    root = mctx.RootFnOutput(
+        prior_logits=jnp.array([[-1.0, 0.0, 2.0, 3.0], [0.5, 0.0, -1.0, 0.0]]),
+        value=jnp.array([0.1, -0.2]),
+        embedding=jnp.zeros([2]))
+    rewards = jnp.array([[1.0, -1.0, 0.5, 0.0], [0.0, 2.0, -1.0, 0.5]])
+    recurrent_fn = _make_bandit_recurrent_fn(rewards, jnp.zeros([2]))
+    key = jax.random.PRNGKey(5)
+
+    def policy(scale):
+      return mctx.gumbel_muzero_policy(
+          params=(), rng_key=key, root=root, recurrent_fn=recurrent_fn,
+          num_simulations=8, gumbel_scale=scale)
+    static = policy(0.0)
+    traced = jax.jit(policy)(jnp.float32(0.0))
+    np.testing.assert_array_equal(static.action, traced.action)
+    np.testing.assert_allclose(static.action_weights, traced.action_weights,
+                               rtol=1e-6)
+    np.testing.assert_allclose(static.search_tree.node_values,
+                               traced.search_tree.node_values, rtol=1e-6)
+
   def test_muzero_policy(self):
     root = mctx.RootFnOutput(
         prior_logits=jnp.array([
