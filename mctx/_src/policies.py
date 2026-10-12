@@ -408,8 +408,12 @@ def _add_dirichlet_noise(rng_key, probs, *, dirichlet_alpha,
   chex.assert_type([dirichlet_alpha, dirichlet_fraction], float)
   if _is_static_zero(dirichlet_fraction):
     # Nothing to mix: without this the Dirichlet sample (gamma sampling,
-    # several while loops) is still computed and multiplied by zero.
-    return probs
+    # several while loops) is still computed and multiplied by zero. The
+    # mixing promoted the probs to the sample's dtype (the default float
+    # type): keep that promotion, so bfloat16 or float16 probs give the same
+    # float32 result as before.
+    noise_dtype = jax.dtypes.canonicalize_dtype(jnp.float_)
+    return probs.astype(jnp.promote_types(probs.dtype, noise_dtype))
 
   batch_size, num_actions = probs.shape
   noise = jax.random.dirichlet(
