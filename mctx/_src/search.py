@@ -250,12 +250,15 @@ def backward(
   """Goes up and updates the tree until all nodes reached the root.
 
   The whole batch is processed by one loop. Vmapping an unbatched backward
-  would make the loop predicate batched; JAX then turns every iteration into a
-  `select` between the old and the new loop state, i.e. over every array of
-  the tree, which makes each step cost O(num_simulations) and a search
-  O(num_simulations^2). Here the predicate is a scalar, finished batch rows
-  rewrite their current values, and only the entries on the paths are read
-  and written.
+  makes the loop predicate batched; JAX then turns every iteration into a
+  `select` between the old and the new loop state over every array of the
+  tree, so each step touches arrays of size [num_simulations, num_actions]
+  rather than the entries on the path. Here the predicate is a scalar,
+  finished batch rows rewrite their current values, and the updates are
+  scatters of the path entries (the compiler may still copy the small
+  per-node arrays). Measured on CPU with batch 16 and 81 actions: 2.8 to 4
+  times faster for a whole Gumbel MuZero policy, identical trees; with a
+  batch of one there is no gain to expect.
 
   Args:
     tree: the MCTS tree state to update, with a batch dimension.
